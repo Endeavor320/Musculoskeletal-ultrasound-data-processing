@@ -1,0 +1,161 @@
+import cv2
+import math
+import numpy as np
+
+# === 第一步：加载原始图像并进行高清化处理 ===
+roi_image_path = r"C:\Users\Laity\Desktop\LiJinling_BS_LGM_BL.bmp"
+roi_image = cv2.imread(roi_image_path)
+
+# 检查图像是否正确加载
+if roi_image is None:
+    raise FileNotFoundError(f"无法加载图像，请检查路径是否正确：{roi_image_path}")
+
+# 转换为灰度图像
+gray_image = cv2.cvtColor(roi_image, cv2.COLOR_BGR2GRAY)
+
+# === 对比度增强 (CLAHE) ===
+clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+enhanced_image = clahe.apply(gray_image)
+
+# === 去噪处理 (高斯模糊) ===
+blurred_image = cv2.GaussianBlur(enhanced_image, (3, 3), 0)
+
+# === 锐化处理 ===
+# 使用拉普拉斯算子进行锐化
+laplacian = cv2.Laplacian(blurred_image, cv2.CV_64F)
+sharpened_image = cv2.convertScaleAbs(blurred_image - 0.7 * laplacian)
+
+# 将高清化后的图像保存并显示
+output_image = cv2.cvtColor(sharpened_image, cv2.COLOR_GRAY2BGR)
+# cv2.imshow("高清化处理后的图像", output_image)
+# cv2.waitKey(0)
+# cv2.destroyAllWindows()
+
+# === 第二步：手动选择上膜和下膜的标记点 ===
+points = []
+
+# 鼠标点击事件回调函数
+def select_points(event, x, y, flags, param):
+    global points, output_image
+
+    if event == cv2.EVENT_LBUTTONDOWN:
+        # 每次点击鼠标左键，记录一个点
+        points.append((x, y))
+        # 在图像上绘制点
+        cv2.circle(output_image, (x, y), 5, (0, 0, 255), -1)
+        cv2.imshow("Select Points", output_image)
+
+# 提示用户选择上膜和下膜的标记
+print("请先选择上筋膜上的两个点，然后选择下筋膜上的两个点。")
+
+# 显示图像并设置鼠标回调函数
+cv2.imshow("Select Points", output_image)
+cv2.setMouseCallback("Select Points", select_points)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
+
+# 确保正确选取了上膜和下膜的标记点（上膜2个点 + 下膜2个点）
+if len(points) == 4:
+    # 上膜上的两个点
+    x1, y1 = points[0]
+    x2, y2 = points[1]
+
+    # 下膜上的两个点
+    x3, y3 = points[2]
+    x4, y4 = points[3]
+
+    # 在图像上绘制上膜和下膜的直线
+    cv2.line(output_image, (x1, y1), (x2, y2), (255, 0, 0), 2)  # 蓝色线表示上膜
+    cv2.line(output_image, (x3, y3), (x4, y4), (0, 255, 255), 2)  # 黄色线表示下膜
+
+    # === 第三步：选择上膜上的三个点，用于计算厚度 ===
+    points_upper = []
+
+    # 鼠标点击事件回调函数，选择上膜上的三个点
+    def select_upper_points(event, x, y, flags, param):
+        global points_upper, output_image
+
+        if event == cv2.EVENT_LBUTTONDOWN:
+            # 每次点击鼠标左键，记录一个点
+            points_upper.append((x, y))
+            # 在图像上绘制点
+            cv2.circle(output_image, (x, y), 5, (0, 255, 0), -1)
+            cv2.imshow("Select Points", output_image)
+
+    # 提示用户选择上膜上的三个点
+    print("请在上筋膜上选择三个点，用于计算厚度。")
+
+    # 显示图像并设置鼠标回调函数
+    cv2.imshow("Select Points", output_image)
+    cv2.setMouseCallback("Select Points", select_upper_points)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    # 确保正确选取了上膜上的三个点
+    if len(points_upper) == 3:
+        # 计算上膜的直线方程 (y = m_upper * x + b_upper)
+        if (x2 - x1) != 0:
+            m_upper = (y2 - y1) / (x2 - x1)
+            b_upper = y1 - m_upper * x1
+        else:
+            m_upper = None  # 上膜垂直
+            b_upper = None
+
+        # 计算下膜的直线方程 (y = m_lower * x + b_lower)
+        if (x4 - x3) != 0:
+            m_lower = (y4 - y3) / (x4 - x3)
+            b_lower = y3 - m_lower * x3
+        else:
+            m_lower = None  # 下膜垂直
+            b_lower = None
+
+        # === 计算每个点到下膜的垂直距离并取平均 ===
+        thickness_values = []
+
+        for point in points_upper:
+            x, y = point
+
+            # 计算从上膜点到下膜的垂直距离
+            if m_lower is not None:
+                # 下膜的方程为 y = m_lower * x + b_lower
+                A = -m_lower
+                B = 1
+                C = -b_lower
+                h = abs(A * x + B * y + C) / math.sqrt(A**2 + B**2)
+            else:
+                # 如果下膜为垂直线，垂直距离即为 x 的差
+                h = abs(x - x3)
+
+            thickness_values.append(h)
+            print(f"上膜点 ({x}, {y}) 到下膜的垂直距离 (h): {h:.2f} 像素")
+
+            # 绘制从上膜点到下膜的垂线
+            if m_lower is not None:
+                # 计算垂线的终点坐标
+                denom = (A**2 + B**2)
+                x_perpendicular = (B * (B * x - A * y) - A * C) / denom
+                y_perpendicular = (A * (-B * x + A * y) - B * C) / denom
+                cv2.line(output_image, (int(x), int(y)), (int(x_perpendicular), int(y_perpendicular)), (0, 0, 255), 2)  # 红色线表示垂线
+            else:
+                # 如果下膜为垂直线，垂线是竖直的
+                cv2.line(output_image, (x, y), (x3, y), (0, 0, 255), 2)  # 红色线表示垂线
+
+        # 计算厚度的平均值
+        avg_thickness = sum(thickness_values) / len(thickness_values)
+        print(f"计算出的平均肌肉厚度 (平均 h): {avg_thickness:.2f} 像素")
+
+        # 在图像上显示最终的结果
+        cv2.imshow("Marked Image with Thickness", output_image)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+        # 保存最终标记后的图像
+        marked_image_path = r"C:\Users\Laity\Desktop\marked_ROI_with_average_thickness.bmp"
+        cv2.imwrite(marked_image_path, output_image)
+        print(f"标记后的图像已保存至 {marked_image_path}")
+
+    else:
+        print("错误：必须选择上膜上的三个点。")
+
+else:
+    print("错误：必须选择上膜和下膜的标记点（共四个点）。")
